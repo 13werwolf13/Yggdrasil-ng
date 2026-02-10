@@ -31,7 +31,15 @@ impl TunAdapter {
             return Err("TUN disabled".to_string());
         }
 
-        let tun_name = if name == "auto" { "ygg0" } else { name };
+        let tun_name = if name == "auto" {
+            if cfg!(windows) {
+                "Yggdrasil"
+            } else {
+                "ygg0"
+            }
+        } else {
+            name
+        };
 
         // Parse the address - strip any /prefix and get just the IP
         let ip_str = addr.split('/').next().unwrap_or(addr);
@@ -40,22 +48,23 @@ impl TunAdapter {
             .map_err(|e| format!("invalid address '{}': {}", ip_str, e))?;
 
         // Create TUN device using tun-rs DeviceBuilder
-        let device = tun_rs::DeviceBuilder::new()
-            .device_guid(0x8f59971a78724aa6b2eb061fc4e9d0a7) // Yggdrasil uses this
+        let mut builder = tun_rs::DeviceBuilder::new()
             .name(tun_name)
-            .ipv6(ip, 7u8) // /7 prefix for 02xx::/7
-            .mtu(mtu)
+            .ipv6(ip, 7u8)
+            .mtu(mtu);
+
+        // Only call device_guid on Windows
+        if cfg!(windows) {
+            builder = builder.device_guid(0x8f59971a78724aa6b2eb061fc4e9d0a7);
+        }
+
+        let device = builder
             .build_async()
             .map_err(|e| format!("failed to create TUN device: {}", e))?;
 
         let device = Arc::new(device);
 
-        tracing::info!(
-            "TUN device '{}' created with address {} and MTU {}",
-            tun_name,
-            addr,
-            mtu,
-        );
+        tracing::info!("TUN device '{}' created with address {} and MTU {}", tun_name, addr, mtu);
 
         // Channel for packets from network → TUN
         let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
