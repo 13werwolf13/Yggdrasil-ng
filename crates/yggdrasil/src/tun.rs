@@ -55,7 +55,10 @@ impl TunAdapter {
 
         // Only call device_guid on Windows
         if cfg!(windows) {
-            builder = builder.device_guid(0x8f59971a78724aa6b2eb061fc4e9d0a7);
+            #[cfg(windows)]
+            {
+                builder = builder.device_guid(0x8f59971a78724aa6b2eb061fc4e9d0a7);
+            }
         }
 
         let device = builder
