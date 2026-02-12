@@ -63,10 +63,18 @@ impl Metadata {
     }
 
     /// Check if the version is compatible.
+    /// Compatible if: same major version AND minor version >= our minor version.
+    /// This allows forward compatibility (we accept newer minor versions).
     pub fn check(&self) -> bool {
         self.major_ver == PROTOCOL_VERSION_MAJOR
-            && self.minor_ver == PROTOCOL_VERSION_MINOR
+            && self.minor_ver >= PROTOCOL_VERSION_MINOR
             && self.public_key.len() == 32
+    }
+
+    /// Check if this is an exact version match (for logging/debugging).
+    pub fn is_exact_match(&self) -> bool {
+        self.major_ver == PROTOCOL_VERSION_MAJOR
+            && self.minor_ver == PROTOCOL_VERSION_MINOR
     }
 
     /// Encode metadata to wire format, signed with the given key.

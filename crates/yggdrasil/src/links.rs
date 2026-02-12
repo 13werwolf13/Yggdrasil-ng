@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -17,6 +18,11 @@ const DEFAULT_BACKOFF_LIMIT: Duration = Duration::from_secs(4096);
 const MINIMUM_BACKOFF_LIMIT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(6);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Connection throttling settings
+const MAX_FAILED_ATTEMPTS: usize = 3; // Ban after this many failed handshakes
+const BAN_DURATION: Duration = Duration::from_secs(900); // 15 minutes
+const FAILED_ATTEMPT_WINDOW: Duration = Duration::from_secs(60); // Track failures within 1 minute
 
 /// Type of link connection.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +52,89 @@ impl Default for LinkOptions {
     }
 }
 
+/// Track failed connection attempts for throttling/banning.
+struct FailedAttempt {
+    count: usize,
+    last_attempt: Instant,
+    banned_until: Option<Instant>,
+}
+
+/// IP-based connection throttling and banning.
+#[derive(Clone)]
+pub struct BanList(Arc<Mutex<HashMap<IpAddr, FailedAttempt>>>);
+
+impl BanList {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    /// Check if an IP is currently banned.
+    pub async fn is_banned(&self, ip: IpAddr) -> bool {
+        let mut map = self.0.lock().await;
+        if let Some(entry) = map.get_mut(&ip) {
+            if let Some(banned_until) = entry.banned_until {
+                if Instant::now() < banned_until {
+                    return true;
+                } else {
+                    // Ban expired, clear it
+                    entry.banned_until = None;
+                    entry.count = 0;
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
+    /// Record a failed handshake attempt. Returns true if the IP should now be banned.
+    pub async fn record_failure(&self, ip: IpAddr, reason: &str) -> bool {
+        let mut map = self.0.lock().await;
+        let now = Instant::now();
+
+        let entry = map.entry(ip).or_insert(FailedAttempt {
+            count: 0,
+            last_attempt: now,
+            banned_until: None,
+        });
+
+        // Reset count if last attempt was outside the window
+        if now.duration_since(entry.last_attempt) > FAILED_ATTEMPT_WINDOW {
+            entry.count = 0;
+        }
+
+        entry.count += 1;
+        entry.last_attempt = now;
+
+        if entry.count >= MAX_FAILED_ATTEMPTS {
+            entry.banned_until = Some(now + BAN_DURATION);
+            tracing::warn!(
+                "Banned {} for {} seconds after {} failed attempts (reason: {})",
+                ip,
+                BAN_DURATION.as_secs(),
+                entry.count,
+                reason
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clean up old entries (call periodically).
+    pub async fn cleanup(&self) {
+        let mut map = self.0.lock().await;
+        let now = Instant::now();
+        map.retain(|_, entry| {
+            // Keep if banned or if recent failure
+            if let Some(banned_until) = entry.banned_until {
+                now < banned_until + Duration::from_secs(60)
+            } else {
+                now.duration_since(entry.last_attempt) < FAILED_ATTEMPT_WINDOW * 2
+            }
+        });
+    }
+}
+
 /// Snapshot of a link's current state (for admin API).
 #[derive(Clone, Debug)]
 pub struct LinkPeerInfo {
@@ -65,7 +154,10 @@ pub struct LinkPeerInfo {
 /// Shared registry of active link connections.
 /// This is separate from `Links` so spawned tasks can update it.
 #[derive(Clone)]
-pub struct ActiveLinks(pub Arc<Mutex<ActiveLinksInner>>);
+pub struct ActiveLinks {
+    inner: Arc<Mutex<ActiveLinksInner>>,
+    pub ban_list: BanList,
+}
 
 pub struct ActiveLinksInner {
     next_id: u64,
@@ -88,10 +180,13 @@ struct ActiveConn {
 
 impl ActiveLinks {
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(ActiveLinksInner {
-            next_id: 0,
-            connections: HashMap::new(),
-        })))
+        Self {
+            inner: Arc::new(Mutex::new(ActiveLinksInner {
+                next_id: 0,
+                connections: HashMap::new(),
+            })),
+            ban_list: BanList::new(),
+        }
     }
 
     async fn register(
@@ -101,7 +196,7 @@ impl ActiveLinks {
         key: [u8; 32],
         priority: u8,
     ) -> (u64, Arc<AtomicU64>, Arc<AtomicU64>) {
-        let mut inner = self.0.lock().await;
+        let mut inner = self.inner.lock().await;
         let id = inner.next_id;
         inner.next_id += 1;
         let rx = Arc::new(AtomicU64::new(0));
@@ -126,13 +221,13 @@ impl ActiveLinks {
     }
 
     async fn unregister(&self, id: u64) {
-        let mut inner = self.0.lock().await;
+        let mut inner = self.inner.lock().await;
         inner.connections.remove(&id);
     }
 
     /// Update rate counters for all connections (call every ~1 second).
     pub async fn update_rates(&self) {
-        let mut inner = self.0.lock().await;
+        let mut inner = self.inner.lock().await;
         for conn in inner.connections.values_mut() {
             let rx = conn.rx.load(Ordering::Relaxed);
             let tx = conn.tx.load(Ordering::Relaxed);
@@ -145,7 +240,7 @@ impl ActiveLinks {
 
     /// Get a snapshot of all active connections for the admin API.
     pub async fn get_peers(&self) -> Vec<LinkPeerInfo> {
-        let inner = self.0.lock().await;
+        let inner = self.inner.lock().await;
         inner
             .connections
             .values()
@@ -194,13 +289,21 @@ impl Links {
     /// Set the core reference. Must be called before listen/add_peer.
     pub fn set_core(&mut self, core: Arc<Core>) {
         self.core = Some(core);
-        // Start rate update task
+        // Start rate update and ban list cleanup tasks
         let active = self.active.clone();
         self.rate_handle = Some(tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
+            let mut cleanup_counter = 0u32;
             loop {
                 interval.tick().await;
                 active.update_rates().await;
+
+                // Clean up ban list every 60 seconds
+                cleanup_counter += 1;
+                if cleanup_counter >= 60 {
+                    cleanup_counter = 0;
+                    active.ban_list.cleanup().await;
+                }
             }
         }));
     }
@@ -396,6 +499,19 @@ async fn handle_connection(
     active: &ActiveLinks,
     uri: &str,
 ) -> Result<(), String> {
+    // Get peer IP address for ban checking
+    let peer_ip = match stream.peer_addr() {
+        Ok(addr) => Some(addr.ip()),
+        Err(_) => None,
+    };
+
+    // Check if IP is banned
+    if let Some(ip) = peer_ip {
+        if active.ban_list.is_banned(ip).await {
+            return Err(format!("IP {} is temporarily banned", ip));
+        }
+    }
+
     // 6 second handshake timeout
     let result = tokio::time::timeout(HANDSHAKE_TIMEOUT, async {
         let meta = Metadata::new(core.public_key, options.priority);
@@ -444,23 +560,61 @@ async fn handle_connection(
     let remote_meta = result?;
 
     if !remote_meta.check() {
-        return Err(format!(
-            "incompatible version {}.{}",
-            remote_meta.major_ver, remote_meta.minor_ver
-        ));
+        let err_msg = format!(
+            "incompatible version {}.{} (local {}.{})",
+            remote_meta.major_ver,
+            remote_meta.minor_ver,
+            crate::version::PROTOCOL_VERSION_MAJOR,
+            crate::version::PROTOCOL_VERSION_MINOR
+        );
+
+        // Log incompatible version
+        if let Some(ip) = peer_ip {
+            tracing::info!("Rejected connection from {}: {}", ip, err_msg);
+            // Record failure and potentially ban this IP
+            active.ban_list.record_failure(ip, "incompatible version").await;
+        } else {
+            tracing::info!("Rejected connection: {}", err_msg);
+        }
+
+        return Err(err_msg);
+    }
+
+    // Log if version is newer than ours (but still compatible)
+    if !remote_meta.is_exact_match() {
+        tracing::debug!(
+            "Connected with newer version {}.{} (local {}.{})",
+            remote_meta.major_ver,
+            remote_meta.minor_ver,
+            crate::version::PROTOCOL_VERSION_MAJOR,
+            crate::version::PROTOCOL_VERSION_MINOR
+        );
     }
 
     if remote_meta.public_key == core.public_key {
+        if let Some(ip) = peer_ip {
+            tracing::debug!("Rejected connection from {}: connected to self", ip);
+            // Don't ban for self-connection, it's usually a configuration issue
+        }
         return Err("connected to self".to_string());
     }
 
     if !options.pinned_keys.is_empty()
         && !options.pinned_keys.contains(&remote_meta.public_key)
     {
+        if let Some(ip) = peer_ip {
+            tracing::debug!("Rejected connection from {}: key not in pinned keys", ip);
+            // Don't ban for wrong pinned key - could be legitimate peering config mismatch
+        }
         return Err("remote key not in pinned keys".to_string());
     }
 
     if link_type == LinkType::Incoming && !core.is_key_allowed(&remote_meta.public_key) {
+        if let Some(ip) = peer_ip {
+            tracing::debug!("Rejected connection from {}: key not in allowed list", ip);
+            // Record failure for unauthorized keys
+            active.ban_list.record_failure(ip, "key not allowed").await;
+        }
         return Err("remote key not allowed".to_string());
     }
 

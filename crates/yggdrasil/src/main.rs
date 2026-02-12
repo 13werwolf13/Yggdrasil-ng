@@ -18,7 +18,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut opts = Options::new();
     opts.optflagopt("g", "genconf", "Generate a new configuration (optionally save to FILE)", "FILE");
     opts.optopt("c", "config", "Config file path (default: yggdrasil.toml)", "FILE");
-    opts.optflag("", "autoconf", "Run without a configuration file (generate ephemeral keys)");
+    opts.optflag("", "autoconf", "Run without a configuration file (use ephemeral keys)");
     opts.optflag("a", "address", "Print the IPv6 address for the given config and exit");
     opts.optflag("s", "subnet", "Print the IPv6 subnet for the given config and exit");
     opts.optopt("l", "loglevel", "Log level: error, warn, info, debug, trace (default: info)", "LEVEL");
