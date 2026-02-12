@@ -16,12 +16,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
 
     let mut opts = Options::new();
-    opts.optflag("", "genconf", "Generate a new configuration and print to stdout");
+    opts.optflagopt("g", "genconf", "Generate a new configuration (optionally save to FILE)", "FILE");
     opts.optopt("c", "config", "Config file path (default: yggdrasil.toml)", "FILE");
     opts.optflag("", "autoconf", "Run without a configuration file (generate ephemeral keys)");
     opts.optflag("a", "address", "Print the IPv6 address for the given config and exit");
     opts.optflag("s", "subnet", "Print the IPv6 subnet for the given config and exit");
     opts.optopt("l", "loglevel", "Log level: error, warn, info, debug, trace (default: info)", "LEVEL");
+    opts.optflag("n", "no-replace", "With --genconf FILE, skip if the file already exists");
     opts.optflag("h", "help", "Print this help");
     opts.optflag("v", "version", "Print version");
 
@@ -44,16 +45,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let genconf = matches.opt_present("genconf");
     let config_path = matches.opt_str("config").unwrap_or_else(|| "yggdrasil.toml".to_string());
     let autoconf = matches.opt_present("autoconf");
     let address = matches.opt_present("address");
     let subnet = matches.opt_present("subnet");
     let loglevel = matches.opt_str("loglevel").unwrap_or_else(|| "info".to_string());
 
-    // --genconf: generate and print config
-    if genconf {
-        print!("{}", Config::generate_config_text());
+    // --genconf [FILE]: generate config, save to file or print to stdout
+    if matches.opt_present("genconf") {
+        if let Some(path) = matches.opt_str("genconf") {
+            if matches.opt_present("no-replace") && std::path::Path::new(&path).exists() {
+                eprintln!("Configuration file {} already exists, skipping", path);
+                return Ok(());
+            }
+            let text = Config::generate_config_text();
+            std::fs::write(&path, &text)?;
+            eprintln!("Configuration saved to {}", path);
+        } else {
+            print!("{}", Config::generate_config_text());
+        }
         return Ok(());
     }
 
