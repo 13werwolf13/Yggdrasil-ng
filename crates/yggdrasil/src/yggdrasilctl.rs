@@ -1,38 +1,45 @@
-use clap::Parser;
+use getopts::Options;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "yggdrasilctl",
-    version,
-    about = "Yggdrasil mesh network control tool"
-)]
-struct Args {
-    /// Admin socket address (default: tcp://localhost:9001)
-    #[arg(short = 'e', long, default_value = "tcp://localhost:9001")]
-    endpoint: String,
-
-    /// Command to run (e.g. getSelf, getPeers, getTree, addPeer, removePeer)
-    command: Option<String>,
-
-    /// Arguments as key=value pairs
-    #[arg(trailing_var_arg = true)]
-    args: Vec<String>,
-
-    /// Output as raw JSON
-    #[arg(short, long)]
-    json: bool,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Vec<String> = std::env::args().collect();
 
-    let command = match &args.command {
+    let mut opts = Options::new();
+    opts.optopt("e", "endpoint", "Admin socket address (default: tcp://localhost:9001)", "URI");
+    opts.optflag("j", "json", "Output as raw JSON");
+    opts.optflag("h", "help", "Print this help");
+    opts.optflag("v", "version", "Print version");
+
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("{}", opts.usage("Usage: yggdrasilctl [options] <command> [key=value ...]"));
+            std::process::exit(1);
+        }
+    };
+
+    if matches.opt_present("help") {
+        println!("{}", opts.usage("Usage: yggdrasilctl [options] <command> [key=value ...]"));
+        println!("Commands: list, getSelf, getPeers, getTree, addPeer, removePeer");
+        return Ok(());
+    }
+
+    if matches.opt_present("version") {
+        println!("yggdrasilctl {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let endpoint = matches.opt_str("endpoint").unwrap_or_else(|| "tcp://localhost:9001".to_string());
+    let json_output = matches.opt_present("json");
+
+    let free = matches.free.clone();
+    let command = match free.first() {
         Some(c) => c.clone(),
         None => {
-            eprintln!("Usage: yggdrasilctl [-e endpoint] <command> [key=value ...]");
+            eprintln!("Usage: yggdrasilctl [options] <command> [key=value ...]");
             eprintln!("Commands: list, getSelf, getPeers, getTree, addPeer, removePeer");
             std::process::exit(1);
         }
@@ -40,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Parse key=value arguments into a JSON object
     let mut arguments = serde_json::Map::new();
-    for arg in &args.args {
+    for arg in &free[1..] {
         if let Some((k, v)) = arg.split_once('=') {
             arguments.insert(k.to_string(), serde_json::Value::String(v.to_string()));
         }
@@ -52,15 +59,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "keepalive": false,
     });
 
-    let addr = args
-        .endpoint
+    let addr = endpoint
         .strip_prefix("tcp://")
-        .unwrap_or(&args.endpoint);
+        .unwrap_or(&endpoint);
 
     let stream = TcpStream::connect(addr).await.map_err(|e| {
         format!(
             "Failed to connect to admin socket at {}: {}",
-            args.endpoint, e
+            endpoint, e
         )
     })?;
 
@@ -84,7 +90,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let resp: serde_json::Value = serde_json::from_str(line.trim())?;
 
-    if args.json {
+    if json_output {
         println!("{}", serde_json::to_string_pretty(&resp)?);
         return Ok(());
     }

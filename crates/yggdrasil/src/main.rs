@@ -1,6 +1,6 @@
 use std::fs::File;
-use clap::Parser;
 use ed25519_dalek::SigningKey;
+use getopts::Options;
 use time::macros::format_description;
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -11,51 +11,55 @@ use yggdrasil::core::Core;
 use yggdrasil::ipv6rwc::ReadWriteCloser;
 use yggdrasil::tun::TunAdapter;
 
-#[derive(Parser, Debug)]
-#[command(name = "yggdrasil", version, about = "Yggdrasil mesh network daemon")]
-struct Args {
-    /// Generate a new configuration and print to stdout
-    #[arg(long)]
-    genconf: bool,
-
-    /// Read configuration from stdin
-    #[arg(long)]
-    useconf: bool,
-
-    /// Log level (error, warn, info, debug, trace)
-    #[arg(long, default_value = "config.json")]
-    useconffile: String,
-
-    /// Run without a configuration file (generate ephemeral keys)
-    #[arg(long)]
-    autoconf: bool,
-
-    /// Print the IPv6 address for the given config and exit
-    #[arg(short, long)]
-    address: bool,
-
-    /// Print the IPv6 subnet for the given config and exit
-    #[arg(short, long)]
-    subnet: bool,
-
-    /// Log level (error, warn, info, debug, trace)
-    #[arg(short, long, default_value = "info")]
-    loglevel: String,
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
+    let args: Vec<String> = std::env::args().collect();
+
+    let mut opts = Options::new();
+    opts.optflag("", "genconf", "Generate a new configuration and print to stdout");
+    opts.optopt("c", "config", "Config file path (default: config.json)", "FILE");
+    opts.optflag("", "autoconf", "Run without a configuration file (generate ephemeral keys)");
+    opts.optflag("a", "address", "Print the IPv6 address for the given config and exit");
+    opts.optflag("s", "subnet", "Print the IPv6 subnet for the given config and exit");
+    opts.optopt("l", "loglevel", "Log level: error, warn, info, debug, trace (default: info)", "LEVEL");
+    opts.optflag("h", "help", "Print this help");
+    opts.optflag("v", "version", "Print version");
+
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            eprintln!("{}", opts.usage("Usage: yggdrasil [options]"));
+            std::process::exit(1);
+        }
+    };
+
+    if matches.opt_present("help") {
+        println!("{}", opts.usage("Usage: yggdrasil [options]"));
+        return Ok(());
+    }
+
+    if matches.opt_present("version") {
+        println!("yggdrasil {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
+    let genconf = matches.opt_present("genconf");
+    let config_path = matches.opt_str("config").unwrap_or_else(|| "config.json".to_string());
+    let autoconf = matches.opt_present("autoconf");
+    let address = matches.opt_present("address");
+    let subnet = matches.opt_present("subnet");
+    let loglevel = matches.opt_str("loglevel").unwrap_or_else(|| "info".to_string());
 
     // --genconf: generate and print config
-    if args.genconf {
+    if genconf {
         let config = Config::generate();
         println!("{}", serde_json::to_string_pretty(&config)?);
         return Ok(());
     }
 
     // Initialize logging
-    let filter = EnvFilter::try_new(&args.loglevel)
+    let filter = EnvFilter::try_new(&loglevel)
         .unwrap_or_else(|_| EnvFilter::new("info"));
     let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second].[subsecond digits:3]");
     let timer = fmt::time::LocalTime::new(format);
@@ -68,17 +72,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     // Load config
-    let config = if args.useconf {
-        let stdin = std::io::read_to_string(std::io::stdin())?;
-        serde_json::from_str::<Config>(&stdin)?
-    } else if args.autoconf {
+    let config = if autoconf {
         Config::generate()
-    } else if !args.useconffile.is_empty() {
-        let file = File::open(&args.useconffile)?;
+    } else if !config_path.is_empty() {
+        let file = File::open(&config_path)?;
         let config = std::io::read_to_string(file)?;
         serde_json::from_str::<Config>(&config)?
     } else {
-        tracing::error!("Please specify --genconf, --useconf, or --autoconf");
+        tracing::error!("Please specify --genconf, --config, or --autoconf");
         std::process::exit(1);
     };
 
@@ -95,14 +96,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let public_key = signing_key.verifying_key().to_bytes();
 
     // --address: print address and exit
-    if args.address {
+    if address {
         let addr = addr_for_key(&public_key);
         println!("{}", addr);
         return Ok(());
     }
 
     // --subnet: print subnet and exit
-    if args.subnet {
+    if subnet {
         let subnet = subnet_for_key(&public_key);
         println!("{}", subnet);
         return Ok(());
