@@ -312,7 +312,7 @@ impl Links {
         self.core.clone().ok_or_else(|| "core not initialized".to_string())
     }
 
-    /// Start listening on an address (e.g. "tcp://[::]:9001").
+    /// Start listening on an address (e.g. "tcp://0.0.0.0:9001").
     pub async fn listen(&mut self, addr: &str) -> Result<(), String> {
         let url = Url::parse(addr).map_err(|e| format!("invalid URL: {}", e))?;
         if url.scheme() != "tcp" {
@@ -628,10 +628,12 @@ async fn handle_connection(
     };
     let peer_addr = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
     tracing::info!(
-        "Connected {}: {} @ {}",
+        "Connected {}: {} @ {} (v0.{}.{})",
         direction,
         remote_addr,
         peer_addr,
+        remote_meta.major_ver,
+        remote_meta.minor_ver
     );
 
     // Register in active links
