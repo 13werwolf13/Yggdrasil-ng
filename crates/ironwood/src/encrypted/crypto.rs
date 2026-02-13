@@ -50,44 +50,17 @@ pub(crate) fn ed25519_private_to_curve25519(signing_key: &SigningKey) -> CurvePr
 pub(crate) fn ed25519_public_to_curve25519(
     ed_pub: &crate::crypto::PublicKey,
 ) -> Result<CurvePublicKey, ()> {
-    // The Curve25519 field prime
-    // p = 2^255 - 19
-    let p = {
-        let mut bytes = [0u8; 32];
-        // p in little-endian
-        bytes[0] = 0xed; // 2^255 - 19 in little-endian
-        bytes[1] = 0xff;
-        for b in bytes.iter_mut().skip(2).take(29) {
-            *b = 0xff;
-        }
-        bytes[31] = 0x7f;
-        bytes
-    };
+    use curve25519_dalek::edwards::CompressedEdwardsY;
 
-    // ed25519 public key is little-endian y with sign bit in top bit of last byte
-    let mut y_le = *ed_pub;
-    y_le[31] &= 0x7f; // clear sign bit
+    // Parse the Ed25519 public key as a compressed Edwards point
+    let compressed = CompressedEdwardsY(*ed_pub);
+    let edwards_point = compressed.decompress().ok_or(())?;
 
-    // Compute u = (1 + y) / (1 - y) mod p using big-integer arithmetic
-    // We'll use a simple modular arithmetic implementation
+    // Convert to Montgomery u-coordinate using the built-in conversion
+    // This uses optimized field arithmetic, much faster than custom bigint
+    let montgomery = edwards_point.to_montgomery();
 
-    let y = le_bytes_to_bigint(&y_le);
-    let p_big = le_bytes_to_bigint(&p);
-    let one = [1u8; 1];
-    let one_big = le_bytes_to_bigint(&one);
-
-    // numerator = 1 + y
-    let num = bigint_add_mod(&one_big, &y, &p_big);
-    // denominator = 1 - y (= p + 1 - y since we work mod p)
-    let denom = bigint_sub_mod(&one_big, &y, &p_big);
-    // denom_inv = denom^(p-2) mod p (Fermat's little theorem)
-    let denom_inv = bigint_pow_mod(&denom, &bigint_sub(&p_big, &[2]), &p_big);
-    // u = num * denom_inv mod p
-    let u = bigint_mul_mod(&num, &denom_inv, &p_big);
-
-    let mut out = [0u8; 32];
-    bigint_to_le_bytes(&u, &mut out);
-    Ok(out)
+    Ok(montgomery.0)
 }
 
 // ---------------------------------------------------------------------------

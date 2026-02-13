@@ -632,7 +632,7 @@ pub(crate) async fn peer_writer(
             },
             _ = keepalive_timer.tick() => {
                 // Timer fired, send keepalive
-                tracing::trace!("Peer {} sending keepalive", peer_id);
+                //tracing::trace!("Peer {} sending keepalive", peer_id);
                 if conn_write.write_all(&keepalive_frame).await.is_err() {
                     break;
                 }

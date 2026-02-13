@@ -7,6 +7,7 @@ description = "Routing library: ed25519-addressed PacketConn over spanning tree"
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
+curve25519-dalek = "4"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 crypto_box = "0.9"
 murmur3 = "0.5"

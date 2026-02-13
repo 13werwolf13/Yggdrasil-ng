@@ -725,6 +725,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "crypto_box",
+ "curve25519-dalek",
  "ed25519-dalek",
  "hex",
  "murmur3",
