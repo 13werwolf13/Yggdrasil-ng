@@ -477,16 +477,14 @@ impl Links {
 
                                 tokio::spawn(async move {
                                     // Permit is held for the duration of this task
-                                    if let Err(e) = handle_connection(
+                                    let _ = handle_connection(
                                         LinkType::Incoming,
                                         opts,
                                         stream,
                                         &core,
                                         &active,
                                         &remote_str,
-                                    ).await {
-                                        tracing::info!("Incoming connection from {} failed: {}", remote, e);
-                                    }
+                                    ).await;
                                     // Permit automatically released when dropped
                                     drop(permit);
                                 });
@@ -554,11 +552,12 @@ impl Links {
                         .await
                         {
                             Ok(()) => {
-                                tracing::info!("Peer {} disconnected", target);
+                                // Clean disconnection - reset backoff
                                 backoff = 0;
                             }
-                            Err(e) => {
-                                tracing::debug!("Peer {} handshake failed: {}", target, e);
+                            Err(_) => {
+                                // Error during connection/handshake
+                                // (handle_connection already logged the details)
                             }
                         }
                     }
