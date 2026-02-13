@@ -366,7 +366,7 @@ pub(crate) async fn peer_reader(
     traffic_tx: mpsc::Sender<TrafficPacket>,
     cancel: CancellationToken,
     max_message_size: u64,
-    _peer_timeout: Duration,
+    peer_timeout: Duration,
     _keepalive_delay: Duration,
 ) {
     let mut reader = BufReader::new(conn_read);
@@ -374,9 +374,18 @@ pub(crate) async fn peer_reader(
 
     loop {
         // Read frame: length(uvarint) | content
+        // Timeout after peer_timeout (default 3s) to detect dead connections
         let frame_result = tokio::select! {
             _ = cancel.cancelled() => { break },
-            result = read_uvarint(&mut reader) => result,
+            result = tokio::time::timeout(peer_timeout, read_uvarint(&mut reader)) => {
+                match result {
+                    Ok(r) => r,
+                    Err(_) => {
+                        tracing::debug!("Peer {} read timeout, closing connection", peer_id);
+                        break;
+                    }
+                }
+            }
         };
 
         let frame_len = match frame_result {
@@ -391,7 +400,15 @@ pub(crate) async fn peer_reader(
         let mut buf = vec![0u8; frame_len as usize];
         let read_result = tokio::select! {
             _ = cancel.cancelled() => { break },
-            result = reader.read_exact(&mut buf) => result,
+            result = tokio::time::timeout(peer_timeout, reader.read_exact(&mut buf)) => {
+                match result {
+                    Ok(r) => r,
+                    Err(_) => {
+                        tracing::debug!("Peer {} read timeout, closing connection", peer_id);
+                        break;
+                    }
+                }
+            }
         };
 
         if read_result.is_err() {
