@@ -350,6 +350,7 @@ async fn read_uvarint<R: tokio::io::AsyncRead + Unpin>(reader: &mut R) -> Result
 
 /// The peer reader task. Reads frames from the connection and dispatches
 /// messages to the router via the shared mutex.
+/// Returns Ok(()) for clean shutdown, Err with disconnect reason otherwise.
 pub(crate) async fn peer_reader(
     peer_id: PeerId,
     peer_key: PublicKey,
@@ -364,9 +365,10 @@ pub(crate) async fn peer_reader(
     max_message_size: u64,
     _peer_timeout: Duration,
     _keepalive_delay: Duration,
-) {
+) -> Result<(), Error> {
     let mut reader = BufReader::new(conn_read);
     let sig_req_send_time = Instant::now();
+    let mut disconnect_reason: Option<Error> = None;
 
     loop {
         // Read frame: length(uvarint) | content
@@ -380,12 +382,13 @@ pub(crate) async fn peer_reader(
         let frame_len = match frame_result {
             Ok(len) => len,
             Err(e) => {
-                tracing::info!("Peer {} read_uvarint error: {}, closing connection", peer_id, e);
+                disconnect_reason = Some(e.into());
                 break;
             },
         };
 
         if frame_len > max_message_size {
+            disconnect_reason = Some(Error::OversizedMessage);
             break;
         }
 
@@ -396,7 +399,7 @@ pub(crate) async fn peer_reader(
         };
 
         if let Err(e) = read_result {
-            tracing::info!("Peer {} read_exact error: {}, closing connection", peer_id, e);
+            disconnect_reason = Some(e.into());
             break;
         }
 
@@ -410,7 +413,7 @@ pub(crate) async fn peer_reader(
         let ptype = match wire::PacketType::try_from(ptype_byte) {
             Ok(t) => t,
             Err(_) => {
-                tracing::warn!(peer_id, "unrecognized packet type: {}", ptype_byte);
+                disconnect_reason = Some(Error::UnrecognizedMessage);
                 break;
             }
         };
@@ -429,7 +432,10 @@ pub(crate) async fn peer_reader(
                 let mut r = wire::WireReader::new(payload);
                 let req = match wire::SigReq::decode(&mut r) {
                     Ok(req) => req,
-                    Err(_) => { break },
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 let router = router.lock().await;
                 // Find peer entry
@@ -445,7 +451,10 @@ pub(crate) async fn peer_reader(
                 let mut r = wire::WireReader::new(payload);
                 let res = match wire::SigRes::decode(&mut r) {
                     Ok(res) => res,
-                    Err(_) => break,
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 // Verify the signature
                 let bs = {
@@ -458,7 +467,7 @@ pub(crate) async fn peer_reader(
                     out
                 };
                 if !Crypto::verify(&peer_key, &bs, &res.psig) {
-                    tracing::warn!(peer_id, "bad sig res from peer");
+                    disconnect_reason = Some(Error::BadMessage);
                     break;
                 }
                 let rtt = sig_req_send_time.elapsed();
@@ -468,10 +477,14 @@ pub(crate) async fn peer_reader(
             wire::PacketType::ProtoAnnounce => {
                 let ann = match wire::Announce::decode(payload) {
                     Ok(a) => a,
-                    Err(_) => { break },
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 let router_ann = RouterAnnounce::from_wire(&ann);
                 if !router_ann.check() {
+                    disconnect_reason = Some(Error::BadMessage);
                     break;
                 }
                 let mut router = router.lock().await;
@@ -483,6 +496,7 @@ pub(crate) async fn peer_reader(
                 let raw = match wire::decode_bloom(payload) {
                     Ok(r) => r,
                     Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
                         break;
                     },
                 };
@@ -493,7 +507,10 @@ pub(crate) async fn peer_reader(
             wire::PacketType::ProtoPathLookup => {
                 let lookup = match wire::PathLookup::decode(payload) {
                     Ok(l) => l,
-                    Err(_) => break,
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 let mut router = router.lock().await;
                 let actions = router.handle_lookup(&peer_key, &lookup);
@@ -503,7 +520,10 @@ pub(crate) async fn peer_reader(
             wire::PacketType::ProtoPathNotify => {
                 let notify = match wire::PathNotify::decode(payload) {
                     Ok(n) => n,
-                    Err(_) => break,
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 let mut router = router.lock().await;
                 let actions = router.handle_notify(&peer_key, &notify);
@@ -513,7 +533,10 @@ pub(crate) async fn peer_reader(
             wire::PacketType::ProtoPathBroken => {
                 let broken = match wire::PathBroken::decode(payload) {
                     Ok(b) => b,
-                    Err(_) => break,
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 let mut router = router.lock().await;
                 let actions = router.handle_broken(&broken);
@@ -523,7 +546,10 @@ pub(crate) async fn peer_reader(
             wire::PacketType::Traffic => {
                 let tr = match wire::Traffic::decode(payload) {
                     Ok(t) => t,
-                    Err(_) => break,
+                    Err(_) => {
+                        disconnect_reason = Some(Error::Decode);
+                        break;
+                    },
                 };
                 let traffic = TrafficPacket {
                     path: tr.path,
@@ -570,6 +596,12 @@ pub(crate) async fn peer_reader(
     }
 
     cancel.cancel();
+
+    // Return the disconnect reason (None = clean shutdown)
+    match disconnect_reason {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 /// Drain queued traffic packets and send them.

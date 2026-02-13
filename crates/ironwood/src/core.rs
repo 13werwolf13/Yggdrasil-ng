@@ -242,7 +242,7 @@ impl crate::types::PacketConn for PacketConnImpl {
         ));
 
         // Run reader task (blocks until peer disconnects)
-        peer_reader(
+        let result = peer_reader(
             peer_id,
             peer_key,
             self.pub_key,
@@ -259,7 +259,7 @@ impl crate::types::PacketConn for PacketConnImpl {
         )
         .await;
 
-        Ok(())
+        result
     }
 
     fn is_closed(&self) -> bool {
