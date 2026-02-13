@@ -627,12 +627,12 @@ pub(crate) async fn peer_writer(
     mut rx: mpsc::Receiver<PeerMessage>,
     conn_write: impl tokio::io::AsyncWrite + Unpin + Send,
     traffic_queue: Arc<tokio::sync::Mutex<PacketQueue>>,
+    keepalive_delay: Duration,
     cancel: CancellationToken,
 ) {
     use crate::wire;
 
     let mut writer = BufWriter::new(conn_write);
-    let keepalive_delay = Duration::from_secs(2);
     let keepalive_frame = wire::encode_frame(wire::PacketType::KeepAlive, &[]);
 
     loop {
