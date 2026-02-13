@@ -269,9 +269,17 @@ impl crate::types::PacketConn for PacketConnImpl {
     }
 
     fn mtu(&self) -> u64 {
-        // Compute overhead: a dummy traffic packet with empty payload
-        // path(1 byte 0-term) + from(1 byte 0-term) + source(32) + dest(32) + watermark(10) + type(1)
-        let overhead = 1 + 1 + PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE + 10 + 1;
+        // Compute overhead dynamically using Traffic::size()
+        // Create a dummy traffic packet with maximum watermark to get worst-case overhead
+        let traffic = wire::Traffic {
+            path: vec![],
+            from: vec![],
+            source: [0; 32],
+            dest: [0; 32],
+            watermark: u64::MAX,  // Maximum watermark for worst-case size
+            payload: vec![],
+        };
+        let overhead = traffic.size() + 1;  // +1 for packet type byte
         self.config.peer_max_message_size.saturating_sub(overhead as u64)
     }
 

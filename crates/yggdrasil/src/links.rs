@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use url::Url;
@@ -20,6 +20,9 @@ const DEFAULT_BACKOFF_LIMIT: Duration = Duration::from_secs(4096);
 const MINIMUM_BACKOFF_LIMIT: Duration = Duration::from_secs(5);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(6);
 const DIAL_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Maximum concurrent incoming connections being processed
+const MAX_CONCURRENT_INCOMING: usize = 350;
 
 // Connection throttling settings
 const MAX_FAILED_ATTEMPTS: usize = 3; // Ban after this many failed handshakes
@@ -440,6 +443,9 @@ impl Links {
             .map_err(|e| format!("local_addr failed: {}", e))?;
         tracing::info!("Listening on tcp://{}", actual_addr);
 
+        // Semaphore to limit concurrent incoming connections
+        let connection_limiter = Arc::new(Semaphore::new(MAX_CONCURRENT_INCOMING));
+
         let handle = tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -447,12 +453,30 @@ impl Links {
                     result = listener.accept() => {
                         match result {
                             Ok((stream, remote)) => {
+                                // Try to acquire permit for new connection
+                                let permit = match connection_limiter.clone().try_acquire_owned() {
+                                    Ok(permit) => permit,
+                                    Err(_) => {
+                                        // Too many concurrent connections, reject immediately
+                                        tracing::warn!(
+                                            "Rejected connection from {} (too many concurrent connections: {}/{})",
+                                            remote,
+                                            MAX_CONCURRENT_INCOMING,
+                                            MAX_CONCURRENT_INCOMING
+                                        );
+                                        drop(stream);  // Explicit close
+                                        continue;
+                                    }
+                                };
+
                                 tracing::debug!("Accepted connection from {}", remote);
                                 let core = core.clone();
                                 let opts = options.clone();
                                 let active = active.clone();
                                 let remote_str = format!("tcp://{}", remote);
+
                                 tokio::spawn(async move {
+                                    // Permit is held for the duration of this task
                                     if let Err(e) = handle_connection(
                                         LinkType::Incoming,
                                         opts,
@@ -461,8 +485,10 @@ impl Links {
                                         &active,
                                         &remote_str,
                                     ).await {
-                                        tracing::debug!("Incoming connection failed: {}", e);
+                                        tracing::info!("Incoming connection failed: {}", e);
                                     }
+                                    // Permit automatically released when dropped
+                                    drop(permit);
                                 });
                             }
                             Err(e) => {
