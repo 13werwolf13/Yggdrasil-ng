@@ -1,7 +1,7 @@
 //! Encrypted PacketConn wrapper.
 //!
-//! Wraps a network-level `PacketConnImpl` with end-to-end NaCl box encryption,
-//! session management, and key ratcheting for forward secrecy.
+//! Wraps a network-level `PacketConnImpl` with end-to-end XSalsa20-Poly1305 encryption
+//! (via RustCrypto's `crypto_box` crate), session management, and key ratcheting for forward secrecy.
 
 pub(crate) mod crypto;
 pub(crate) mod session;

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{ AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -144,16 +144,16 @@ impl BanList {
 /// Uses local buffering to minimize atomic operations.
 struct CountingStream {
     inner: TcpStream,
-    rx_counter: Arc<AtomicU64>,
-    tx_counter: Arc<AtomicU64>,
-    rx_buffer: u64,
-    tx_buffer: u64,
+    rx_counter: Arc<AtomicUsize>,
+    tx_counter: Arc<AtomicUsize>,
+    rx_buffer: usize,
+    tx_buffer: usize,
 }
 
-const FLUSH_THRESHOLD: u64 = 65536; // Flush to atomic counters every 64KB
+const FLUSH_THRESHOLD: usize = 65536; // Flush to atomic counters every 64KB
 
 impl CountingStream {
-    fn new(stream: TcpStream, rx_counter: Arc<AtomicU64>, tx_counter: Arc<AtomicU64>) -> Self {
+    fn new(stream: TcpStream, rx_counter: Arc<AtomicUsize>, tx_counter: Arc<AtomicUsize>) -> Self {
         Self {
             inner: stream,
             rx_counter,
@@ -179,15 +179,11 @@ impl CountingStream {
 }
 
 impl AsyncRead for CountingStream {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
+    fn poll_read(mut self: Pin<&mut Self>,cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
         let before = buf.filled().len();
         let result = Pin::new(&mut self.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = &result {
-            let bytes_read = (buf.filled().len() - before) as u64;
+            let bytes_read = (buf.filled().len() - before);
             self.rx_buffer += bytes_read;
             if self.rx_buffer >= FLUSH_THRESHOLD {
                 self.flush_rx();
@@ -198,14 +194,10 @@ impl AsyncRead for CountingStream {
 }
 
 impl AsyncWrite for CountingStream {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
+    fn poll_write(mut self: Pin<&mut Self>,cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
         let result = Pin::new(&mut self.inner).poll_write(cx, buf);
         if let Poll::Ready(Ok(n)) = &result {
-            self.tx_buffer += *n as u64;
+            self.tx_buffer += *n;
             if self.tx_buffer >= FLUSH_THRESHOLD {
                 self.flush_tx();
             }
@@ -244,10 +236,10 @@ pub struct LinkPeerInfo {
     pub inbound: bool,
     pub key: [u8; 32],
     pub priority: u8,
-    pub rx_bytes: u64,
-    pub tx_bytes: u64,
-    pub rx_rate: u64,
-    pub tx_rate: u64,
+    pub rx_bytes: usize,
+    pub tx_bytes: usize,
+    pub rx_rate: usize,
+    pub tx_rate: usize,
     pub uptime_secs: f64,
     pub last_error: Option<String>,
 }
@@ -270,12 +262,12 @@ struct ActiveConn {
     inbound: bool,
     key: [u8; 32],
     priority: u8,
-    rx: Arc<AtomicU64>,
-    tx: Arc<AtomicU64>,
-    rx_rate: Arc<AtomicU64>,
-    tx_rate: Arc<AtomicU64>,
-    last_rx: u64,
-    last_tx: u64,
+    rx: Arc<AtomicUsize>,
+    tx: Arc<AtomicUsize>,
+    rx_rate: Arc<AtomicUsize>,
+    tx_rate: Arc<AtomicUsize>,
+    last_rx: usize,
+    last_tx: usize,
     up: Instant,
 }
 
@@ -290,18 +282,12 @@ impl ActiveLinks {
         }
     }
 
-    async fn register(
-        &self,
-        uri: String,
-        inbound: bool,
-        key: [u8; 32],
-        priority: u8,
-    ) -> (u64, Arc<AtomicU64>, Arc<AtomicU64>) {
+    async fn register(&self,uri: String, inbound: bool, key: [u8; 32], priority: u8) -> (u64, Arc<AtomicUsize>, Arc<AtomicUsize>) {
         let mut inner = self.inner.lock().await;
         let id = inner.next_id;
         inner.next_id += 1;
-        let rx = Arc::new(AtomicU64::new(0));
-        let tx = Arc::new(AtomicU64::new(0));
+        let rx = Arc::new(AtomicUsize::new(0));
+        let tx = Arc::new(AtomicUsize::new(0));
         inner.connections.insert(
             id,
             ActiveConn {
@@ -311,8 +297,8 @@ impl ActiveLinks {
                 priority,
                 rx: rx.clone(),
                 tx: tx.clone(),
-                rx_rate: Arc::new(AtomicU64::new(0)),
-                tx_rate: Arc::new(AtomicU64::new(0)),
+                rx_rate: Arc::new(AtomicUsize::new(0)),
+                tx_rate: Arc::new(AtomicUsize::new(0)),
                 last_rx: 0,
                 last_tx: 0,
                 up: Instant::now(),

@@ -1,7 +1,7 @@
 //! Session state machine for encrypted communication.
 //!
 //! Implements Init/Ack/Traffic handshake with 3-tier key ratcheting
-//! and forward secrecy via XSalsa20-Poly1305 (NaCl box).
+//! and forward secrecy using XSalsa20-Poly1305 (via RustCrypto's `crypto_box` crate).
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
