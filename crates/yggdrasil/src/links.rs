@@ -358,6 +358,8 @@ pub struct Links {
     core: Option<Arc<Core>>,
     active: ActiveLinks,
     peers: HashMap<String, PeerEntry>,
+    /// Track resolved IP:port to detect duplicate peers (e.g., same host via IP and domain)
+    peer_addrs: HashMap<String, String>, // "IP:port" -> original URI
     listeners: HashMap<String, (CancellationToken, JoinHandle<()>)>,
     rate_handle: Option<JoinHandle<()>>,
 }
@@ -368,6 +370,7 @@ impl Links {
             core: None,
             active,
             peers: HashMap::new(),
+            peer_addrs: HashMap::new(),
             listeners: HashMap::new(),
             rate_handle: None,
         }
@@ -500,15 +503,34 @@ impl Links {
             return Err(format!("unsupported scheme: {}", url.scheme()));
         }
 
+        let host = url.host_str().ok_or("missing host")?.to_string();
+        let port = url.port().ok_or("missing port")?;
+        let target = format!("{}:{}", host, port);
+
+        // Resolve DNS to detect duplicates (e.g., same peer via IP and domain)
+        let mut resolved_addrs: Vec<_> = tokio::net::lookup_host(&target)
+            .await
+            .map_err(|e| format!("DNS lookup failed for {}: {}", target, e))?
+            .collect();
+        resolved_addrs.sort();
+
+        // Check if any resolved IP:port is already connected
+        for addr in &resolved_addrs {
+            let addr_key = addr.to_string();
+            if let Some(existing_uri) = self.peer_addrs.get(&addr_key) {
+                return Err(format!("peer {} already connected as {} (resolves to same address {})", uri, existing_uri, addr_key));
+            }
+        }
+
+        // Get the primary address for tracking
+        let primary_addr = resolved_addrs.first().ok_or("failed to resolve address")?;
+        let addr_key = primary_addr.to_string();
+
         let options = parse_link_options(&url)?;
         let core = self.core()?;
         let active = self.active.clone();
         let cancel = CancellationToken::new();
         let cancel_clone = cancel.clone();
-
-        let host = url.host_str().ok_or("missing host")?.to_string();
-        let port = url.port().ok_or("missing port")?;
-        let target = format!("{}:{}", host, port);
         let uri_str = uri.to_string();
 
         let handle = tokio::spawn(async move {
@@ -527,16 +549,7 @@ impl Links {
                 match result {
                     Ok(Ok(stream)) => {
                         stream.set_nodelay(true).ok();
-                        match handle_connection(
-                            LinkType::Persistent,
-                            options.clone(),
-                            stream,
-                            &core,
-                            &active,
-                            &uri_str,
-                        )
-                        .await
-                        {
+                        match handle_connection(LinkType::Persistent, options.clone(), stream, &core, &active, &uri_str).await {
                             Ok(()) => {
                                 // Clean disconnection - reset backoff
                                 backoff = 0;
@@ -569,6 +582,7 @@ impl Links {
         });
 
         self.peers.insert(uri.to_string(), PeerEntry { cancel, handle });
+        self.peer_addrs.insert(addr_key, uri.to_string());
         Ok(())
     }
 
@@ -577,6 +591,10 @@ impl Links {
         if let Some(entry) = self.peers.remove(uri) {
             entry.cancel.cancel();
             entry.handle.abort();
+
+            // Also remove from peer_addrs map
+            self.peer_addrs.retain(|_, v| v != uri);
+
             Ok(())
         } else {
             Err("peer not found".to_string())
@@ -596,6 +614,7 @@ impl Links {
             entry.cancel.cancel();
             entry.handle.abort();
         }
+        self.peer_addrs.clear();
     }
 }
 
