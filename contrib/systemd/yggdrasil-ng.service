@@ -1,17 +1,18 @@
 [Unit]
 Description=Yggdrasil Network NG
 Wants=network-online.target
+Conflicts=yggdrasil.service
 After=network-online.target
 
 [Service]
-Group=yggdrasil
+Group=yggdrasil-ng
 ProtectHome=true
 ProtectSystem=true
-SyslogIdentifier=yggdrasil
+SyslogIdentifier=yggdrasil-ng
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 ExecStartPre=+-/usr/sbin/modprobe tun
-ExecStartPre=/usr/bin/yggdrasil --genconf=/etc/yggdrasil/yggdrasil-ng.conf --no-replace
-ExecStart=/usr/bin/yggdrasil --config /etc/yggdrasil/yggdrasil-ng.conf
+ExecStartPre=/usr/bin/yggdrasil-ng --genconf=/etc/yggdrasil/yggdrasil-ng.conf --no-replace
+ExecStart=/usr/bin/yggdrasil-ng --config /etc/yggdrasil/yggdrasil-ng.conf
 Restart=always
 TimeoutStopSec=5
 
