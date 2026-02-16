@@ -248,14 +248,12 @@ pub(crate) struct Router {
     pub do_root1: bool,
     pub do_root2: bool,
     pub last_refresh: Instant,
-    pub last_announce: Instant,
 
     // Config
     pub router_refresh: Duration,
     pub router_timeout: Duration,
     pub path_timeout: Duration,
     pub path_throttle: Duration,
-    pub announce_interval: Duration,
     pub bloom_transform: Option<std::sync::Arc<dyn Fn(PublicKey) -> PublicKey + Send + Sync>>,
     pub path_notify_cb: Option<std::sync::Arc<dyn Fn(PublicKey) + Send + Sync>>,
 }
@@ -284,12 +282,10 @@ impl Router {
             do_root1: false,
             do_root2: true,
             last_refresh: Instant::now(),
-            last_announce: Instant::now(),
             router_refresh: config.router_refresh,
             router_timeout: config.router_timeout,
             path_timeout: config.path_timeout,
             path_throttle: config.path_throttle,
-            announce_interval: Duration::from_secs(120),
             bloom_transform: config.bloom_transform.clone(),
             path_notify_cb: config.path_notify.clone(),
         }
@@ -310,17 +306,6 @@ impl Router {
             tracing::debug!("Router refresh timer expired, triggering refresh");
             self.refresh = true;
             self.last_refresh = Instant::now();
-        }
-
-        // Check if it's time to resend all announcements (every 120 seconds)
-        // This ensures routing info stays fresh even if tree doesn't change
-        if self.last_announce.elapsed() >= self.announce_interval {
-            tracing::debug!("Announce timer expired ({}s), clearing sent map to force resend", self.announce_interval.as_secs());
-            // Clear the sent map to force resending all announcements to all peers
-            for sent_set in self.sent.values_mut() {
-                sent_set.clear();
-            }
-            self.last_announce = Instant::now();
         }
 
         self.do_root2 = self.do_root2 || self.do_root1;
