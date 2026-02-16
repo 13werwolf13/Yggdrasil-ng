@@ -115,6 +115,11 @@ impl EncryptedPacketConn {
     pub async fn routing_entries(&self) -> usize {
         self.inner.routing_entries().await
     }
+
+    /// Get our current tree coordinates (path from root).
+    pub async fn tree_coordinates(&self) -> Vec<crate::wire::PeerPort> {
+        self.inner.tree_coordinates().await
+    }
 }
 
 /// Background reader loop: reads from inner PacketConn, decrypts via sessions, delivers.

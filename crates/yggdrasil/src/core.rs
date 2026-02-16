@@ -246,4 +246,9 @@ impl Core {
     pub async fn routing_entries(&self) -> usize {
         self.inner.routing_entries().await
     }
+
+    /// Get our current tree coordinates (path from root).
+    pub async fn tree_coordinates(&self) -> Vec<u64> {
+        self.inner.tree_coordinates().await
+    }
 }

@@ -133,6 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("Public key", "key"),
                 ("IPv6 address", "address"),
                 ("IPv6 subnet", "subnet"),
+                ("Coordinates", "coordinates"),
                 ("Routing entries", "routing_entries"),
             ]);
         }

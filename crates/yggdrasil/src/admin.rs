@@ -158,10 +158,7 @@ async fn handle_admin_conn(stream: tokio::net::TcpStream, core: Arc<Core>) {
     }
 }
 
-async fn handle_request(
-    req: &AdminRequest,
-    core: &Arc<Core>,
-) -> Result<serde_json::Value, String> {
+async fn handle_request(req: &AdminRequest, core: &Arc<Core>) -> Result<serde_json::Value, String> {
     match req.request.to_lowercase().as_str() {
         "list" => Ok(serde_json::json!({
             "list": ["list", "getself", "getpeers", "gettree", "addpeer", "removepeer"],
@@ -169,12 +166,14 @@ async fn handle_request(
 
         "getself" => {
             let routing_entries = core.routing_entries().await;
+            let coordinates = core.tree_coordinates().await;
             Ok(serde_json::json!({
                 "build_name": env!("CARGO_PKG_NAME"),
                 "build_version": env!("CARGO_PKG_VERSION"),
                 "key": hex::encode(core.public_key()),
                 "address": core.address().to_string(),
                 "subnet": core.subnet().to_string(),
+                "coordinates": coordinates,
                 "routing_entries": routing_entries,
             }))
         }
@@ -254,10 +253,7 @@ async fn handle_request(
     }
 }
 
-async fn write_response(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    resp: &AdminResponse,
-) -> Result<(), std::io::Error> {
+async fn write_response(writer: &mut tokio::net::tcp::OwnedWriteHalf, resp: &AdminResponse) -> Result<(), std::io::Error> {
     let json = serde_json::to_string(resp).unwrap_or_default();
     writer.write_all(json.as_bytes()).await?;
     writer.write_all(b"\n").await?;

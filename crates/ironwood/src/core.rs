@@ -402,6 +402,14 @@ impl PacketConnImpl {
         let router = self.router.lock().await;
         router.infos.len()
     }
+
+    /// Get our current tree coordinates (path from root).
+    pub async fn tree_coordinates(&self) -> Vec<wire::PeerPort> {
+        let router = self.router.lock().await;
+        let self_key = router.crypto.public_key;
+        let (_root, path) = router.get_root_and_path(&self_key);
+        path
+    }
 }
 
 /// Create a new PacketConn. This is the primary public constructor.
